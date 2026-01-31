@@ -5,11 +5,12 @@ import AdminService from '../services/AdminService.js';
 import SubscriptionService from '../services/SubscriptionService.js';
 
 const adminRateLimit = createRateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 100
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 100 // 100 requests per window
 });
 
 export default async function adminRoutes(fastify, options) {
+  // Verify admin access for ALL routes
   fastify.addHook('onRequest', verifyAdmin);
 
   // Get admin stats
@@ -18,9 +19,12 @@ export default async function adminRoutes(fastify, options) {
   }, async (request, reply) => {
     try {
       const stats = await AdminService.getStats();
+
       return reply.send(stats);
     } catch (error) {
-      return reply.status(500).send({ error: error.message });
+      return reply.status(500).send({
+        error: error.message
+      });
     }
   });
 
@@ -30,9 +34,12 @@ export default async function adminRoutes(fastify, options) {
   }, async (request, reply) => {
     try {
       const users = await AdminService.getAllUsers(request.query);
+
       return reply.send(users);
     } catch (error) {
-      return reply.status(500).send({ error: error.message });
+      return reply.status(500).send({
+        error: error.message
+      });
     }
   });
 
@@ -40,9 +47,12 @@ export default async function adminRoutes(fastify, options) {
   fastify.get('/subscriptions', async (request, reply) => {
     try {
       const plans = await SubscriptionService.getAllPlans();
+
       return reply.send(plans);
     } catch (error) {
-      return reply.status(500).send({ error: error.message });
+      return reply.status(500).send({
+        error: error.message
+      });
     }
   });
 
@@ -50,15 +60,20 @@ export default async function adminRoutes(fastify, options) {
   fastify.post('/subscriptions', async (request, reply) => {
     try {
       const plan = await SubscriptionService.createPlan(request.body);
+
       return reply.status(201).send({
         success: true,
         plan
       });
     } catch (error) {
       if (error.message.includes('Validation failed')) {
-        return reply.status(400).send({ error: error.message });
+        return reply.status(400).send({
+          error: error.message
+        });
       }
-      return reply.status(500).send({ error: error.message });
+      return reply.status(500).send({
+        error: error.message
+      });
     }
   });
 
@@ -67,12 +82,15 @@ export default async function adminRoutes(fastify, options) {
     try {
       const { id } = request.params;
       const plan = await SubscriptionService.updatePlan(id, request.body);
+
       return reply.send({
         success: true,
         plan
       });
     } catch (error) {
-      return reply.status(500).send({ error: error.message });
+      return reply.status(500).send({
+        error: error.message
+      });
     }
   });
 
@@ -81,12 +99,17 @@ export default async function adminRoutes(fastify, options) {
     try {
       const { id } = request.params;
       const result = await SubscriptionService.deletePlan(id);
+
       return reply.send(result);
     } catch (error) {
       if (error.message.includes('Cannot delete')) {
-        return reply.status(400).send({ error: error.message });
+        return reply.status(400).send({
+          error: error.message
+        });
       }
-      return reply.status(500).send({ error: error.message });
+      return reply.status(500).send({
+        error: error.message
+      });
     }
   });
 
@@ -95,9 +118,12 @@ export default async function adminRoutes(fastify, options) {
     try {
       const { id } = request.params;
       const result = await AdminService.suspendUser(id);
+
       return reply.send(result);
     } catch (error) {
-      return reply.status(500).send({ error: error.message });
+      return reply.status(500).send({
+        error: error.message
+      });
     }
   });
 
@@ -106,9 +132,12 @@ export default async function adminRoutes(fastify, options) {
     try {
       const { id } = request.params;
       const result = await AdminService.activateUser(id);
+
       return reply.send(result);
     } catch (error) {
-      return reply.status(500).send({ error: error.message });
+      return reply.status(500).send({
+        error: error.message
+      });
     }
   });
 
@@ -117,9 +146,12 @@ export default async function adminRoutes(fastify, options) {
     try {
       const { id } = request.params;
       const result = await AdminService.deleteUser(id);
+
       return reply.send(result);
     } catch (error) {
-      return reply.status(500).send({ error: error.message });
+      return reply.status(500).send({
+        error: error.message
+      });
     }
   });
 }

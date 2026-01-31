@@ -75,9 +75,6 @@ model SubscriptionPlan {
   status            String   @default("active") // active, inactive
   stripePriceId     String?  // Stripe price ID
 
-  // Relations
-  users             User[]
-
   createdAt         DateTime @default(now())
   updatedAt         DateTime @updatedAt
 

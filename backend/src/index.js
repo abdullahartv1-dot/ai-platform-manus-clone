@@ -5,10 +5,7 @@ import swagger from '@fastify/swagger';
 import swaggerUI from '@fastify/swagger-ui';
 import dotenv from 'dotenv';
 
-import authRoutes from './routes/auth.js';
-import usersRoutes from './routes/users.js';
-import adminRoutes from './routes/admin.js';
-import supportRoutes from './routes/support.js';
+import routes from './routes/index.js';
 
 dotenv.config();
 
@@ -114,11 +111,10 @@ fastify.setErrorHandler((error, request, reply) => {
   });
 });
 
-// Register routes
-await fastify.register(authRoutes, { prefix: '/api/auth' });
-await fastify.register(usersRoutes, { prefix: '/api/users' });
-await fastify.register(adminRoutes, { prefix: '/api/admin' });
-await fastify.register(supportRoutes, { prefix: '/api/support' });
+// Register routes dynamically
+for (const route of routes) {
+  await fastify.register(route.handler, { prefix: route.path });
+}
 
 // Start server
 const start = async () => {

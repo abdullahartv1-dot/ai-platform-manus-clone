@@ -1,9 +1,12 @@
-import prisma from '../lib/prisma.js';
 import { createRateLimit } from '../lib/rateLimit.js';
+import { verifyAdmin } from '../lib/adminAuth.js';
+import prisma from '../lib/prisma.js';
+import UserService from '../services/UserService.js';
+import SubscriptionService from '../services/SubscriptionService.js';
 
 const usersRateLimit = createRateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 100
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 100 // 100 requests per window
 });
 
 export default async function usersRoutes(fastify, options) {
@@ -13,58 +16,13 @@ export default async function usersRoutes(fastify, options) {
   }, async (request, reply) => {
     try {
       const userId = request.user.userId;
-      const user = await prisma.user.findUnique({
-        where: { id: userId },
-        select: {
-          id: true,
-          email: true,
-          name: true,
-          plan: true,
-          subscriptionStatus: true,
-          subscriptionStartedAt: true,
-          subscriptionExpiresAt: true,
-          serverId: true,
-          serverIp: true,
-          serverStatus: true,
-          defaultModel: true,
-          maxUsageHours: true,
-          maxProjects: true,
-          customModels: true,
-          lastActiveAt: true
-        }
-      });
+      const data = await UserService.getDashboardData(userId);
 
-      const backups = await prisma.backup.findMany({
-        where: { userId },
-        orderBy: { createdAt: 'desc' },
-        take: 5
-      });
-
-      const invoices = await prisma.invoice.findMany({
-        where: { userId },
-        orderBy: { createdAt: 'desc' },
-        take: 5
-      });
-
-      const tickets = await prisma.supportTicket.findMany({
-        where: {
-          userId,
-          status: {
-            not: 'closed'
-          }
-        },
-        orderBy: { createdAt: 'desc' },
-        take: 5
-      });
-
-      return {
-        user,
-        backups,
-        invoices,
-        tickets
-      };
+      return reply.send(data);
     } catch (error) {
-      return reply.status(500).send({ error: error.message });
+      return reply.status(500).send({
+        error: error.message
+      });
     }
   });
 
@@ -88,7 +46,7 @@ export default async function usersRoutes(fastify, options) {
         prisma.backup.count({ where: { userId } })
       ]);
 
-      return {
+      return reply.send({
         backups,
         pagination: {
           page: parseInt(page),
@@ -96,9 +54,11 @@ export default async function usersRoutes(fastify, options) {
           total,
           totalPages: Math.ceil(total / parseInt(limit))
         }
-      };
+      });
     } catch (error) {
-      return reply.status(500).send({ error: error.message });
+      return reply.status(500).send({
+        error: error.message
+      });
     }
   });
 
@@ -122,7 +82,7 @@ export default async function usersRoutes(fastify, options) {
         prisma.invoice.count({ where: { userId } })
       ]);
 
-      return {
+      return reply.send({
         invoices,
         pagination: {
           page: parseInt(page),
@@ -130,23 +90,24 @@ export default async function usersRoutes(fastify, options) {
           total,
           totalPages: Math.ceil(total / parseInt(limit))
         }
-      };
+      });
     } catch (error) {
-      return reply.status(500).send({ error: error.message });
+      return reply.status(500).send({
+        error: error.message
+      });
     }
   });
 
   // Get subscription plans
   fastify.get('/plans', async (request, reply) => {
     try {
-      const plans = await prisma.subscriptionPlan.findMany({
-        where: { status: 'active' },
-        orderBy: { price: 'asc' }
-      });
+      const plans = await SubscriptionService.getActivePlans();
 
       return reply.send(plans);
     } catch (error) {
-      return reply.status(500).send({ error: error.message });
+      return reply.status(500).send({
+        error: error.message
+      });
     }
   });
 }
