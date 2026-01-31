@@ -1,0 +1,200 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ==================== USERS ====================
+
+model User {
+  id                String   @id @default(cuid())
+  email             String   @unique
+  passwordHash      String
+  name              String?
+
+  // Subscription info
+  plan              String   @default("free") // free, starter, pro, enterprise
+  subscriptionStatus String   @default("inactive") // inactive, active, suspended, expired, past_due
+  subscriptionStartedAt DateTime?
+  subscriptionExpiresAt DateTime?
+
+  // Server info
+  serverId          String?  @unique // Hetzner server ID
+  serverIp          String?
+  serverStatus      String?  // creating, running, stopped, error
+
+  // User preferences
+  defaultModel      String?  @default("gpt-4")
+  customModels      Json?    // { "openai": "sk-...", "anthropic": "sk-..." }
+  maxUsageHours     Int      @default(10)
+  maxProjects       Int      @default(1)
+
+  // Metadata
+  lastActiveAt      DateTime @default(now())
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  // Relations
+  backups           Backup[]
+  invoices          Invoice[]
+  supportTickets     SupportTicket[]
+
+  @@index([email])
+  @@index([subscriptionStatus])
+  @@index([plan])
+  @@index([subscriptionExpiresAt])
+}
+
+// ==================== SUBSCRIPTION PLANS ====================
+
+model SubscriptionPlan {
+  id                String   @id @default(cuid())
+  name              String   // Starter, Pro, Enterprise
+  price             Float    // $19, $49, $99
+  planType          String   @default("monthly") // monthly, yearly
+  serverType        String   // cx21, cx31, cx41
+
+  // Server specs
+  serverSpecs        Json     // { cpu: 2, ram: "8GB", storage: "80GB", bandwidth: "20TB" }
+
+  // Limits
+  maxUsageHours     Int      // 10, 50, 200, unlimited
+  maxProjects       Int      // 1, 5, 10, unlimited
+  backupRetentionDays Int    // 7, 30, 90, unlimited
+
+  // Features
+  features          String[] // list of features
+
+  // Status
+  status            String   @default("active") // active, inactive
+  stripePriceId     String?  // Stripe price ID
+
+  // Relations
+  users             User[]
+
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@index([status])
+  @@index([price])
+}
+
+// ==================== BACKUPS ====================
+
+model Backup {
+  id                String   @id @default(cuid())
+  userId            String
+  user              User     @relation(fields: [userId], references: [id])
+
+  // Backup metadata
+  type              String   // full, incremental
+  size              Int      // in bytes
+  status            String   // pending, completed, failed
+
+  // Storage info
+  localPath         String?
+  cloudPath         String?
+
+  // Metadata
+  createdAt         DateTime @default(now())
+  expiresAt         DateTime?
+
+  @@index([userId])
+  @@index([status])
+  @@index([expiresAt])
+}
+
+// ==================== INVOICES ====================
+
+model Invoice {
+  id                String   @id @default(cuid())
+  userId            String
+  user              User     @relation(fields: [userId], references: [id])
+
+  // Payment info
+  amount            Float
+  currency          String   @default("USD")
+  status            String   // pending, paid, failed, refunded
+
+  // Stripe info
+  stripeInvoiceId   String   @unique
+  stripePaymentIntentId String?
+
+  // Metadata
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@index([userId])
+  @@index([status])
+  @@index([stripeInvoiceId])
+}
+
+// ==================== SUPPORT TICKETS ====================
+
+model SupportTicket {
+  id                String   @id @default(cuid())
+  userId            String
+  user              User     @relation(fields: [userId], references: [id])
+
+  // Ticket info
+  subject           String
+  message           String
+  category          String   // server, billing, account, other
+  priority          String   @default("normal") // low, normal, high, urgent
+  status            String   @default("open") // open, in_progress, closed
+
+  // Assignment
+  assignedTo        String?  // Admin user ID
+  assignedToName    String?
+
+  // Metadata
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  // Relations
+  messages          TicketMessage[]
+
+  @@index([userId])
+  @@index([status])
+  @@index([category])
+  @@index([priority])
+}
+
+model TicketMessage {
+  id                String   @id @default(cuid())
+  ticketId          String
+  ticket            SupportTicket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+
+  // Message info
+  senderId          String   // User or Admin ID
+  senderType        String   // user, admin
+  message           String
+
+  // Metadata
+  createdAt         DateTime @default(now())
+
+  @@index([ticketId])
+}
+
+// ==================== ADMIN USERS ====================
+
+model Admin {
+  id                String   @id @default(cuid())
+  email             String   @unique
+  passwordHash      String
+  name              String
+  role              String   // admin, support
+
+  // Metadata
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@index([email])
+  @@index([role])
+}
