@@ -1,19 +1,21 @@
-import { PrismaClient } from '@prisma/client';
+import prisma from '../lib/prisma.js';
+import { subscriptionValidators } from '../lib/validators.js';
+import { verifyAdmin } from '../lib/adminAuth.js';
+import { createRateLimit } from '../lib/rateLimit.js';
 
-const prisma = new PrismaClient();
+const adminRateLimit = createRateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 100 // 100 requests per window
+});
 
 export default async function adminRoutes(fastify, options) {
-  // Verify admin access
-  fastify.addHook('onRequest', async (request, reply) => {
-    try {
-      await request.jwtVerify();
-    } catch (err) {
-      reply.send(err);
-    }
-  });
+  // Verify admin access for ALL routes
+  fastify.addHook('onRequest', verifyAdmin);
 
   // Get admin stats
-  fastify.get('/stats', async (request, reply) => {
+  fastify.get('/stats', {
+    onRequest: [adminRateLimit]
+  }, async (request, reply) => {
     const now = new Date();
     const monthAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
 
@@ -39,7 +41,7 @@ export default async function adminRoutes(fastify, options) {
       }
     });
 
-    const mrr = invoices.reduce((sum, inv) => sum + inv.amount, 0);
+    const mrr = invoices.reduce((sum, inv) => sum + Number(inv.amount), 0);
     const arr = mrr * 12;
 
     // Active servers
@@ -63,17 +65,19 @@ export default async function adminRoutes(fastify, options) {
     return {
       totalUsers,
       activeUsers,
-      mrr,
-      arr,
+      mrr: Number(mrr.toFixed(2)),
+      arr: Number(arr.toFixed(2)),
       activeServers,
       stoppedServers,
-      serverCost
+      serverCost: Number(serverCost.toFixed(2))
     };
   });
 
-  // Get all users
-  fastify.get('/users', async (request, reply) => {
-    const { search, status, plan } = request.query;
+  // Get all users (with pagination)
+  fastify.get('/users', {
+    onRequest: [adminRateLimit]
+  }, async (request, reply) => {
+    const { search, status, plan, page = 1, limit = 50 } = request.query;
 
     const where = {};
 
@@ -92,25 +96,40 @@ export default async function adminRoutes(fastify, options) {
       ];
     }
 
-    const users = await prisma.user.findMany({
-      where,
-      orderBy: { createdAt: 'desc' },
-      select: {
-        id: true,
-        email: true,
-        name: true,
-        plan: true,
-        subscriptionStatus: true,
-        serverId: true,
-        serverIp: true,
-        serverStatus: true,
-        subscriptionExpiresAt: true,
-        lastActiveAt: true,
-        createdAt: true
-      }
-    });
+    const skip = (parseInt(page) - 1) * parseInt(limit);
 
-    return users;
+    const [users, total] = await Promise.all([
+      prisma.user.findMany({
+        where,
+        orderBy: { createdAt: 'desc' },
+        select: {
+          id: true,
+          email: true,
+          name: true,
+          plan: true,
+          subscriptionStatus: true,
+          serverId: true,
+          serverIp: true,
+          serverStatus: true,
+          subscriptionExpiresAt: true,
+          lastActiveAt: true,
+          createdAt: true
+        },
+        skip,
+        take: parseInt(limit)
+      }),
+      prisma.user.count({ where })
+    ]);
+
+    return {
+      users,
+      pagination: {
+        page: parseInt(page),
+        limit: parseInt(limit),
+        total,
+        totalPages: Math.ceil(total / parseInt(limit))
+      }
+    };
   });
 
   // Get subscription plans
@@ -124,60 +143,90 @@ export default async function adminRoutes(fastify, options) {
 
   // Create subscription plan
   fastify.post('/subscriptions', async (request, reply) => {
-    const data = request.body;
+    try {
+      const data = request.body;
 
-    const plan = await prisma.subscriptionPlan.create({
-      data: {
-        name: data.name,
-        price: data.price,
-        planType: data.planType || 'monthly',
-        serverType: data.serverType,
-        serverSpecs: {
-          cpu: data.cpu,
-          ram: data.ram,
-          storage: data.storage,
-          bandwidth: data.bandwidth
-        },
-        maxUsageHours: data.maxUsageHours,
-        maxProjects: data.maxProjects,
-        backupRetentionDays: data.backupRetentionDays,
-        features: data.features || [],
-        status: data.status || 'active',
-        stripePriceId: data.stripePriceId
+      // Validate input
+      subscriptionValidators.create(data);
+
+      const plan = await prisma.subscriptionPlan.create({
+        data: {
+          name: data.name,
+          price: Number(data.price),
+          planType: data.planType || 'monthly',
+          serverType: data.serverType,
+          serverSpecs: {
+            cpu: parseInt(data.cpu),
+            ram: data.ram,
+            storage: data.storage,
+            bandwidth: data.bandwidth
+          },
+          maxUsageHours: parseInt(data.maxUsageHours),
+          maxProjects: parseInt(data.maxProjects),
+          backupRetentionDays: parseInt(data.backupRetentionDays),
+          features: data.features || [],
+          status: data.status || 'active',
+          stripePriceId: data.stripePriceId
+        }
+      });
+
+      return {
+        success: true,
+        plan
+      };
+    } catch (error) {
+      if (error.message.includes('is required') || error.message.includes('must be')) {
+        return reply.status(400).send({
+          error: error.message
+        });
       }
-    });
-
-    return plan;
+      throw error;
+    }
   });
 
   // Update subscription plan
   fastify.put('/subscriptions/:id', async (request, reply) => {
-    const { id } = request.params;
-    const data = request.body;
+    try {
+      const { id } = request.params;
+      const data = request.body;
 
-    const plan = await prisma.subscriptionPlan.update({
-      where: { id },
-      data: {
-        name: data.name,
-        price: data.price,
-        planType: data.planType,
-        serverType: data.serverType,
-        serverSpecs: {
-          cpu: data.cpu,
-          ram: data.ram,
-          storage: data.storage,
-          bandwidth: data.bandwidth
-        },
-        maxUsageHours: data.maxUsageHours,
-        maxProjects: data.maxProjects,
-        backupRetentionDays: data.backupRetentionDays,
-        features: data.features,
-        status: data.status,
-        stripePriceId: data.stripePriceId
+      // Validate input
+      subscriptionValidators.create(data);
+
+      const plan = await prisma.subscriptionPlan.update({
+        where: { id },
+        data: {
+          name: data.name,
+          price: Number(data.price),
+          planType: data.planType,
+          serverType: data.serverType,
+          serverSpecs: {
+            cpu: parseInt(data.cpu),
+            ram: data.ram,
+            storage: data.storage,
+            bandwidth: data.bandwidth
+          },
+          maxUsageHours: parseInt(data.maxUsageHours),
+          maxProjects: parseInt(data.maxProjects),
+          backupRetentionDays: parseInt(data.backupRetentionDays),
+          features: data.features,
+          status: data.status,
+          stripePriceId: data.stripePriceId
+        }
+      });
+
+      return {
+        success: true,
+        plan
+      };
+    } catch (error) {
+      if (error.message.includes('is required') || error.message.includes('must be')) {
+        return reply.status(400).send({
+          error: error.message
+        });
       }
-    });
-
-    return plan;
+      throw error;
+    }
   });
 
   // Delete subscription plan
@@ -199,7 +248,9 @@ export default async function adminRoutes(fastify, options) {
       where: { id }
     });
 
-    return { success: true };
+    return {
+      success: true
+    };
   });
 
   // Suspend user
@@ -214,7 +265,9 @@ export default async function adminRoutes(fastify, options) {
       }
     });
 
-    return { success: true };
+    return {
+      success: true
+    };
   });
 
   // Activate user
@@ -229,7 +282,9 @@ export default async function adminRoutes(fastify, options) {
       }
     });
 
-    return { success: true };
+    return {
+      success: true
+    };
   });
 
   // Delete user
@@ -240,6 +295,8 @@ export default async function adminRoutes(fastify, options) {
       where: { id }
     });
 
-    return { success: true };
+    return {
+      success: true
+    };
   });
 }

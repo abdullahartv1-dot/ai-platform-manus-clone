@@ -1,103 +1,138 @@
 import bcrypt from 'bcrypt';
-import { PrismaClient } from '@prisma/client';
+import prisma from '../lib/prisma.js';
+import { authValidators } from '../lib/validators.js';
+import { createRateLimit } from '../lib/rateLimit.js';
 
-const prisma = new PrismaClient();
+const authRateLimit = createRateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 5 // 5 requests per window
+});
 
 export default async function authRoutes(fastify, options) {
   // Register
-  fastify.post('/register', async (request, reply) => {
-    const { email, password, name } = request.body;
+  fastify.post('/register', {
+    onRequest: [authRateLimit]
+  }, async (request, reply) => {
+    try {
+      const { email, password, name } = request.body;
 
-    // Check if user already exists
-    const existingUser = await prisma.user.findUnique({
-      where: { email }
-    });
+      // Validate input
+      authValidators.register({ email, password, name });
 
-    if (existingUser) {
-      return reply.status(400).send({
-        error: 'User already exists'
+      // Check if user already exists
+      const existingUser = await prisma.user.findUnique({
+        where: { email }
       });
-    }
 
-    // Hash password
-    const passwordHash = await bcrypt.hash(password, 10);
-
-    // Create user
-    const user = await prisma.user.create({
-      data: {
-        email,
-        passwordHash,
-        name
+      if (existingUser) {
+        return reply.status(400).send({
+          error: 'User already exists'
+        });
       }
-    });
 
-    // Generate token
-    const token = fastify.jwt.sign({
-      userId: user.id,
-      email: user.email
-    });
+      // Hash password
+      const passwordHash = await bcrypt.hash(password, 10);
 
-    return {
-      user: {
-        id: user.id,
-        email: user.email,
-        name: user.name,
-        plan: user.plan,
-        subscriptionStatus: user.subscriptionStatus
-      },
-      token
-    };
+      // Create user
+      const user = await prisma.user.create({
+        data: {
+          email,
+          passwordHash,
+          name
+        }
+      });
+
+      // Generate token
+      const token = fastify.jwt.sign({
+        userId: user.id,
+        email: user.email
+      });
+
+      return {
+        success: true,
+        user: {
+          id: user.id,
+          email: user.email,
+          name: user.name,
+          plan: user.plan,
+          subscriptionStatus: user.subscriptionStatus
+        },
+        token
+      };
+    } catch (error) {
+      if (error.message.includes('is required') || error.message.includes('Invalid')) {
+        return reply.status(400).send({
+          error: error.message
+        });
+      }
+      throw error;
+    }
   });
 
   // Login
-  fastify.post('/login', async (request, reply) => {
-    const { email, password } = request.body;
+  fastify.post('/login', {
+    onRequest: [authRateLimit]
+  }, async (request, reply) => {
+    try {
+      const { email, password } = request.body;
 
-    // Find user
-    const user = await prisma.user.findUnique({
-      where: { email }
-    });
+      // Validate input
+      authValidators.login({ email, password });
 
-    if (!user) {
-      return reply.status(401).send({
-        error: 'Invalid credentials'
+      // Find user
+      const user = await prisma.user.findUnique({
+        where: { email }
       });
-    }
 
-    // Check password
-    const validPassword = await bcrypt.compare(password, user.passwordHash);
+      if (!user) {
+        return reply.status(401).send({
+          error: 'Invalid credentials'
+        });
+      }
 
-    if (!validPassword) {
-      return reply.status(401).send({
-        error: 'Invalid credentials'
+      // Check password
+      const validPassword = await bcrypt.compare(password, user.passwordHash);
+
+      if (!validPassword) {
+        return reply.status(401).send({
+          error: 'Invalid credentials'
+        });
+      }
+
+      // Update last active
+      await prisma.user.update({
+        where: { id: user.id },
+        data: { lastActiveAt: new Date() }
       });
+
+      // Generate token
+      const token = fastify.jwt.sign({
+        userId: user.id,
+        email: user.email
+      });
+
+      return {
+        success: true,
+        user: {
+          id: user.id,
+          email: user.email,
+          name: user.name,
+          plan: user.plan,
+          subscriptionStatus: user.subscriptionStatus,
+          serverId: user.serverId,
+          serverIp: user.serverIp,
+          serverStatus: user.serverStatus
+        },
+        token
+      };
+    } catch (error) {
+      if (error.message.includes('is required') || error.message.includes('Invalid')) {
+        return reply.status(400).send({
+          error: error.message
+        });
+      }
+      throw error;
     }
-
-    // Update last active
-    await prisma.user.update({
-      where: { id: user.id },
-      data: { lastActiveAt: new Date() }
-    });
-
-    // Generate token
-    const token = fastify.jwt.sign({
-      userId: user.id,
-      email: user.email
-    });
-
-    return {
-      user: {
-        id: user.id,
-        email: user.email,
-        name: user.name,
-        plan: user.plan,
-        subscriptionStatus: user.subscriptionStatus,
-        serverId: user.serverId,
-        serverIp: user.serverIp,
-        serverStatus: user.serverStatus
-      },
-      token
-    };
   });
 
   // Get current user
@@ -122,6 +157,7 @@ export default async function authRoutes(fastify, options) {
         defaultModel: true,
         maxUsageHours: true,
         maxProjects: true,
+        customModels: true,
         lastActiveAt: true,
         createdAt: true
       }
@@ -137,19 +173,23 @@ export default async function authRoutes(fastify, options) {
     const userId = request.user.userId;
     const { name, defaultModel } = request.body;
 
+    const updateData = {};
+    if (name) updateData.name = name;
+    if (defaultModel) updateData.defaultModel = defaultModel;
+
     const user = await prisma.user.update({
       where: { id: userId },
-      data: {
-        ...(name && { name }),
-        ...(defaultModel && { defaultModel })
-      }
+      data: updateData
     });
 
     return {
-      id: user.id,
-      email: user.email,
-      name: user.name,
-      defaultModel: user.defaultModel
+      success: true,
+      user: {
+        id: user.id,
+        email: user.email,
+        name: user.name,
+        defaultModel: user.defaultModel
+      }
     };
   });
 
@@ -161,14 +201,13 @@ export default async function authRoutes(fastify, options) {
     const { provider, apiKey, model } = request.body;
 
     const user = await prisma.user.findUnique({
-      where: { id: userId }
+      where: { id: userId },
+      select: { customModels: true }
     });
 
-    if (!user.customModels) {
-      user.customModels = {};
-    }
+    const customModels = user.customModels || {};
 
-    user.customModels[provider] = {
+    customModels[provider] = {
       apiKey,
       model
     };
@@ -176,7 +215,7 @@ export default async function authRoutes(fastify, options) {
     await prisma.user.update({
       where: { id: userId },
       data: {
-        customModels: user.customModels,
+        customModels,
         defaultModel: model
       }
     });

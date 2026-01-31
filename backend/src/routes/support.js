@@ -1,6 +1,12 @@
-import { PrismaClient } from '@prisma/client';
+import prisma from '../lib/prisma.js';
+import { ticketValidators } from '../lib/validators.js';
+import { createRateLimit } from '../lib/rateLimit.js';
+import { verifyAdmin } from '../lib/adminAuth.js';
 
-const prisma = new PrismaClient();
+const supportRateLimit = createRateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 20 // 20 requests per window
+});
 
 export default async function supportRoutes(fastify, options) {
   // Get user's tickets
@@ -24,32 +30,47 @@ export default async function supportRoutes(fastify, options) {
 
   // Create ticket
   fastify.post('/tickets', {
-    onRequest: [fastify.authenticate]
+    onRequest: [fastify.authenticate, supportRateLimit]
   }, async (request, reply) => {
-    const userId = request.user.userId;
-    const { subject, message, category, priority } = request.body;
+    try {
+      const userId = request.user.userId;
+      const { subject, message, category, priority } = request.body;
 
-    const ticket = await prisma.supportTicket.create({
-      data: {
-        userId,
-        subject,
-        message,
-        category: category || 'other',
-        priority: priority || 'normal'
+      // Validate input
+      ticketValidators.create({ subject, message });
+
+      const ticket = await prisma.supportTicket.create({
+        data: {
+          userId,
+          subject,
+          message,
+          category: category || 'other',
+          priority: priority || 'normal'
+        }
+      });
+
+      // Add initial message
+      await prisma.ticketMessage.create({
+        data: {
+          ticketId: ticket.id,
+          senderId: userId,
+          senderType: 'user',
+          message
+        }
+      });
+
+      return {
+        success: true,
+        ticket
+      };
+    } catch (error) {
+      if (error.message.includes('is required') || error.message.includes('must be')) {
+        return reply.status(400).send({
+          error: error.message
+        });
       }
-    });
-
-    // Add initial message
-    await prisma.ticketMessage.create({
-      data: {
-        ticketId: ticket.id,
-        senderId: userId,
-        senderType: 'user',
-        message
-      }
-    });
-
-    return ticket;
+      throw error;
+    }
   });
 
   // Get ticket details
@@ -118,12 +139,17 @@ export default async function supportRoutes(fastify, options) {
       }
     });
 
-    return ticketMessage;
+    return {
+      success: true,
+      message: ticketMessage
+    };
   });
 
-  // Admin: Get all tickets
-  fastify.get('/admin/tickets', async (request, reply) => {
-    const { status, category, priority } = request.query;
+  // Admin: Get all tickets (with pagination)
+  fastify.get('/admin/tickets', {
+    onRequest: [verifyAdmin]
+  }, async (request, reply) => {
+    const { status, category, priority, page = 1, limit = 50 } = request.query;
 
     const where = {};
 
@@ -139,29 +165,46 @@ export default async function supportRoutes(fastify, options) {
       where.priority = priority;
     }
 
-    const tickets = await prisma.supportTicket.findMany({
-      where,
-      include: {
-        messages: {
-          orderBy: { createdAt: 'desc' },
-          take: 1
-        },
-        user: {
-          select: {
-            id: true,
-            email: true,
-            name: true
-          }
-        }
-      },
-      orderBy: { createdAt: 'desc' }
-    });
+    const skip = (parseInt(page) - 1) * parseInt(limit);
 
-    return tickets;
+    const [tickets, total] = await Promise.all([
+      prisma.supportTicket.findMany({
+        where,
+        include: {
+          messages: {
+            orderBy: { createdAt: 'desc' },
+            take: 1
+          },
+          user: {
+            select: {
+              id: true,
+              email: true,
+              name: true
+            }
+          }
+        },
+        orderBy: { createdAt: 'desc' },
+        skip,
+        take: parseInt(limit)
+      }),
+      prisma.supportTicket.count({ where })
+    ]);
+
+    return {
+      tickets,
+      pagination: {
+        page: parseInt(page),
+        limit: parseInt(limit),
+        total,
+        totalPages: Math.ceil(total / parseInt(limit))
+      }
+    };
   });
 
   // Admin: Update ticket status
-  fastify.put('/admin/tickets/:id', async (request, reply) => {
+  fastify.put('/admin/tickets/:id', {
+    onRequest: [verifyAdmin]
+  }, async (request, reply) => {
     const { id } = request.params;
     const { status, assignedTo } = request.body;
 
@@ -185,13 +228,19 @@ export default async function supportRoutes(fastify, options) {
       }
     });
 
-    return ticket;
+    return {
+      success: true,
+      ticket
+    };
   });
 
   // Admin: Add message to ticket
-  fastify.post('/admin/tickets/:id/messages', async (request, reply) => {
+  fastify.post('/admin/tickets/:id/messages', {
+    onRequest: [verifyAdmin]
+  }, async (request, reply) => {
     const { id } = request.params;
-    const { message, adminId, adminName } = request.body;
+    const { message } = request.body;
+    const adminId = request.admin.id;
 
     const ticketMessage = await prisma.ticketMessage.create({
       data: {
@@ -202,6 +251,9 @@ export default async function supportRoutes(fastify, options) {
       }
     });
 
-    return ticketMessage;
+    return {
+      success: true,
+      message: ticketMessage
+    };
   });
 }
